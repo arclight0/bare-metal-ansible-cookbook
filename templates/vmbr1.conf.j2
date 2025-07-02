@@ -1,0 +1,8 @@
+# DNSMasq configuration for {{ bridge_name }} NAT bridge
+interface={{ bridge_name }}
+bind-interfaces
+
+# IPv4 DHCP
+dhcp-range={{ dhcp_range_ipv4 }},{{ dhcp_lease_time }}
+dhcp-option=3,{{ bridge_ip4.split('/')[0] }}        # Gateway
+dhcp-option=6,{{ dns_servers }}                    # DNS servers

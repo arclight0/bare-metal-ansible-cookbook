@@ -1,0 +1,205 @@
+---
+- name: Install and Configure pgBackRest
+  hosts: postgres
+  become: true
+  vars_files:
+    - ../../group_vars/all/vault.yml
+    - ../../group_vars/postgres.yml
+
+  tasks:
+    - name: Install pgBackRest
+      apt:
+        name:
+          - pgbackrest
+        state: present
+        update_cache: yes
+
+    - name: Create pgBackRest log directory
+      file:
+        path: /var/log/pgbackrest
+        state: directory
+        owner: "{{ pgbackrest_user }}"
+        group: "{{ pgbackrest_group }}"
+        mode: '0750'
+
+    - name: Create pgBackRest configuration directory
+      file:
+        path: /etc/pgbackrest
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure pgBackRest
+      template:
+        src: "{{ playbook_dir }}/../../templates/pgbackrest.conf.j2"
+        dest: /etc/pgbackrest/pgbackrest.conf
+        owner: root
+        group: postgres
+        mode: '0640'
+      notify:
+        - restart postgresql
+
+    - name: Configure PostgreSQL for WAL archiving
+      lineinfile:
+        path: "{{ postgres_config_dir }}/postgresql.conf"
+        regexp: "^#?{{ item.option }}"
+        line: "{{ item.option }} = {{ item.value }}"
+        state: present
+      loop:
+        - { option: 'archive_mode', value: '{{ postgres_archive_mode }}' }
+        - { option: 'archive_command', value: "'{{ postgres_archive_command }}'" }
+        - { option: 'wal_level', value: '{{ postgres_wal_level }}' }
+        - { option: 'max_wal_senders', value: '{{ postgres_max_wal_senders }}' }
+      notify: restart postgresql
+
+    - name: Restart PostgreSQL to apply configuration changes
+      meta: flush_handlers
+
+    - name: Wait for PostgreSQL to be ready after restart
+      wait_for:
+        port: "{{ postgres_port }}"
+        host: localhost
+        timeout: 60
+
+    - name: Verify PostgreSQL is responding
+      shell: pg_isready -h localhost -p {{ postgres_port }}
+      register: pg_ready
+      retries: 5
+      delay: 10
+      until: pg_ready.rc == 0
+      changed_when: false
+
+    - name: Check if pgBackRest stanza exists
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} info
+      become_user: "{{ pgbackrest_user }}"
+      register: stanza_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create pgBackRest stanza
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} stanza-create
+      become_user: "{{ pgbackrest_user }}"
+      when: "'missing stanza path' in stanza_check.stdout"
+      register: stanza_created
+
+    - name: Verify stanza creation
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} check
+      become_user: "{{ pgbackrest_user }}"
+      when: stanza_created is changed
+
+    - name: Create backup script for full backups
+      copy:
+        content: |
+          #!/bin/bash
+          set -e
+          echo "$(date): Starting full backup"
+          /usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} backup --type=full
+          echo "$(date): Full backup completed"
+        dest: /usr/local/bin/pgbackrest-full-backup.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Create backup script for incremental backups
+      copy:
+        content: |
+          #!/bin/bash
+          set -e
+          echo "$(date): Starting incremental backup"
+          /usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} backup --type=incr
+          echo "$(date): Incremental backup completed"
+        dest: /usr/local/bin/pgbackrest-incr-backup.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Schedule full backup (weekly on Sunday)
+      cron:
+        name: "pgBackRest full backup"
+        cron_file: pgbackrest
+        user: "{{ pgbackrest_user }}"
+        minute: "{{ pgbackrest_full_backup_schedule.split()[1] }}"
+        hour: "{{ pgbackrest_full_backup_schedule.split()[0] }}"
+        day: "*"
+        month: "*"
+        weekday: "{{ pgbackrest_full_backup_schedule.split()[4] }}"
+        job: "/usr/local/bin/pgbackrest-full-backup.sh >> /var/log/pgbackrest/backup.log 2>&1"
+
+    - name: Schedule incremental backup (daily Mon-Sat)
+      cron:
+        name: "pgBackRest incremental backup"
+        cron_file: pgbackrest
+        user: "{{ pgbackrest_user }}"
+        minute: "{{ pgbackrest_incremental_backup_schedule.split()[1] }}"
+        hour: "{{ pgbackrest_incremental_backup_schedule.split()[0] }}"
+        day: "*"
+        month: "*"
+        weekday: "{{ pgbackrest_incremental_backup_schedule.split()[4] }}"
+        job: "/usr/local/bin/pgbackrest-incr-backup.sh >> /var/log/pgbackrest/backup.log 2>&1"
+
+    - name: Create backup verification script
+      copy:
+        content: |
+          #!/bin/bash
+          set -e
+          echo "$(date): Verifying backup integrity"
+          /usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} check
+          echo "$(date): Backup verification completed"
+        dest: /usr/local/bin/pgbackrest-check.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Schedule backup verification (daily)
+      cron:
+        name: "pgBackRest backup verification"
+        cron_file: pgbackrest
+        user: "{{ pgbackrest_user }}"
+        minute: "30"
+        hour: "4"
+        day: "*"
+        month: "*"
+        weekday: "*"
+        job: "/usr/local/bin/pgbackrest-check.sh >> /var/log/pgbackrest/check.log 2>&1"
+
+    - name: Create logrotate configuration for pgBackRest logs
+      copy:
+        content: |
+          /var/log/pgbackrest/*.log {
+              daily
+              missingok
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              copytruncate
+              su {{ pgbackrest_user }} {{ pgbackrest_group }}
+          }
+        dest: /etc/logrotate.d/pgbackrest
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Display pgBackRest status
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} info
+      become_user: "{{ pgbackrest_user }}"
+      register: pgbackrest_info
+      changed_when: false
+
+    - name: Show pgBackRest configuration status
+      debug:
+        msg:
+          - "pgBackRest has been successfully configured!"
+          - "S3 Bucket: {{ pgbackrest_s3_bucket }}"
+          - "Stanza: {{ pgbackrest_stanza }}"
+          - "Full backup schedule: {{ pgbackrest_full_backup_schedule }}"
+          - "Incremental backup schedule: {{ pgbackrest_incremental_backup_schedule }}"
+          - "Current status:"
+          - "{{ pgbackrest_info.stdout_lines }}"
+
+  handlers:
+    - name: restart postgresql
+      service:
+        name: postgresql
+        state: restarted

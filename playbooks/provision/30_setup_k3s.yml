@@ -1,0 +1,88 @@
+---
+- name: Install K3s on Master Node
+  hosts: k3s_master
+  become: true
+  vars:
+    k3s_version: v1.33.1+k3s1
+    k3s_server_args: >-
+      --node-ip={{ local_ip }}
+      --with-node-id
+      --secrets-encryption
+      --tls-san={{ ansible_host }}
+      --tls-san={{ local_ip }}
+      --flannel-backend=host-gw
+      --cluster-init
+      --etcd-snapshot-schedule-cron="0 2 * * *"
+      --etcd-snapshot-retention=7
+  tasks:
+    - name: Check if K3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download K3s installation script
+      get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: '0755'
+      when: not k3s_binary.stat.exists
+
+    - name: Install K3s server
+      shell: >
+        INSTALL_K3S_VERSION={{ k3s_version }} /tmp/k3s-install.sh server {{ k3s_server_args }}
+      args:
+        creates: /usr/local/bin/k3s
+      register: k3s_server_install
+      when: not k3s_binary.stat.exists
+
+    - name: Get K3s token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token
+
+    - name: Set k3s_token fact
+      set_fact:
+        k3s_token: "{{ k3s_token.content | b64decode | trim }}"
+
+    - name: Get KUBECONFIG
+      slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: kubeconfig
+
+    - name: Save KUBECONFIG locally
+      copy:
+        content: "{{ kubeconfig.content | b64decode | replace('127.0.0.1', ansible_host) }}"
+        dest: "{{ playbook_dir }}/../../files/k3s.yaml"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+- name: Install K3s on Worker Nodes
+  hosts: k3s_worker
+  become: true
+  vars:
+    k3s_version: v1.33.1+k3s1
+    k3s_master_ip: "{{ hostvars[groups['k3s_master'][0]].local_ip }}"
+    k3s_token: "{{ hostvars[groups['k3s_master'][0]].k3s_token }}"
+  tasks:
+    - name: Check if K3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download K3s installation script
+      get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: '0755'
+      when: not k3s_binary.stat.exists
+
+    - name: Install K3s agent
+      shell: >
+        INSTALL_K3S_VERSION={{ k3s_version }}
+        K3S_URL=https://{{ k3s_master_ip }}:6443
+        K3S_TOKEN={{ k3s_token }}
+        /tmp/k3s-install.sh agent --node-ip={{ local_ip }} --with-node-id
+      args:
+        creates: /usr/local/bin/k3s
+      when: not k3s_binary.stat.exists and k3s_token is defined

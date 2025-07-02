@@ -1,0 +1,105 @@
+---
+- name: pgBackRest Operations
+  hosts: postgres
+  become: true
+  vars_files:
+    - ../group_vars/all/vault.yml
+    - ../group_vars/postgres.yml
+  vars:
+    postgres_version: 17
+    postgres_data_dir: /var/lib/postgresql/{{ postgres_version }}/main
+    operation: "{{ pgbackrest_operation | default('info') }}"
+    backup_type: "{{ pgbackrest_backup_type | default('incr') }}"
+    restore_target: "{{ pgbackrest_restore_target | default(omit) }}"
+
+  tasks:
+    - name: Show available operations
+      debug:
+        msg:
+          - "Available pgBackRest operations:"
+          - "  ansible-playbook playbooks/pgbackrest_operations.yml -e pgbackrest_operation=info"
+          - "  ansible-playbook playbooks/pgbackrest_operations.yml -e pgbackrest_operation=backup -e pgbackrest_backup_type=full"
+          - "  ansible-playbook playbooks/pgbackrest_operations.yml -e pgbackrest_operation=backup -e pgbackrest_backup_type=incr"
+          - "  ansible-playbook playbooks/pgbackrest_operations.yml -e pgbackrest_operation=check"
+          - "  ansible-playbook playbooks/pgbackrest_operations.yml -e pgbackrest_operation=restore -e pgbackrest_restore_target=latest"
+          - ""
+          - "Current operation: {{ operation }}"
+      when: operation == "info" or operation == "help"
+
+    - name: Display pgBackRest information
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} info
+      become_user: "{{ pgbackrest_user }}"
+      register: pgbackrest_info_output
+      when: operation == "info"
+
+    - name: Show pgBackRest info
+      debug:
+        msg: "{{ pgbackrest_info_output.stdout_lines }}"
+      when: operation == "info"
+
+    - name: Perform backup check
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} check
+      become_user: "{{ pgbackrest_user }}"
+      register: pgbackrest_check_output
+      when: operation == "check"
+
+    - name: Show backup check results
+      debug:
+        msg:
+          - "Backup check completed successfully!"
+          - "{{ pgbackrest_check_output.stdout_lines }}"
+      when: operation == "check"
+
+    - name: Perform manual backup
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} backup --type={{ backup_type }}
+      become_user: "{{ pgbackrest_user }}"
+      register: pgbackrest_backup_output
+      when: operation == "backup"
+
+    - name: Show backup results
+      debug:
+        msg:
+          - "{{ backup_type | title }} backup completed successfully!"
+          - "{{ pgbackrest_backup_output.stdout_lines }}"
+      when: operation == "backup"
+
+    - name: Stop PostgreSQL for restore (if requested)
+      service:
+        name: postgresql
+        state: stopped
+      when: operation == "restore"
+
+    - name: Perform restore
+      shell: |
+        pgbackrest --stanza={{ pgbackrest_stanza }} restore \
+        {% if restore_target is defined and restore_target != "latest" %}
+        --set={{ restore_target }} \
+        {% endif %}
+        --delta
+      become_user: "{{ pgbackrest_user }}"
+      register: pgbackrest_restore_output
+      when: operation == "restore"
+
+    - name: Start PostgreSQL after restore
+      service:
+        name: postgresql
+        state: started
+      when: operation == "restore"
+
+    - name: Show restore results
+      debug:
+        msg:
+          - "Restore completed successfully!"
+          - "{{ pgbackrest_restore_output.stdout_lines }}"
+      when: operation == "restore"
+
+    - name: Show current pgBackRest status after operation
+      shell: pgbackrest --stanza={{ pgbackrest_stanza }} info
+      become_user: "{{ pgbackrest_user }}"
+      register: final_status
+      when: operation in ["backup", "restore", "check"]
+
+    - name: Display final status
+      debug:
+        msg: "{{ final_status.stdout_lines }}"
+      when: operation in ["backup", "restore", "check"]

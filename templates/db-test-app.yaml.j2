@@ -1,0 +1,346 @@
+# ConfigMap for non-sensitive configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-test-config
+data:
+  POSTGRES_HOST: "{{ hostvars['postgres-01']['local_ip'] }}"  # PostgreSQL IP from inventory
+  POSTGRES_PORT: "{{ postgres_port }}"
+  POSTGRES_DB: "myproject_db"  # Database created in application.yml
+  REDIS_HOST: "{{ hostvars['redis-01']['local_ip'] }}"   # Redis IP from inventory
+  REDIS_PORT: "{{ redis_port }}"
+---
+# Secret for database credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-test-secrets
+type: Opaque
+stringData:
+  POSTGRES_USER: "appuser"  # Application user from application.yml
+  POSTGRES_PASSWORD: "{{ vault_postgres_password }}"  # Password from vault
+  REDIS_USER: "{{ redis_acl_user }}"  # Redis ACL user from redis.yml
+  REDIS_PASSWORD: "{{ redis_acl_password }}"  # Redis ACL password from vault
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-test-app
+  labels:
+    app: db-test-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-test-app
+  template:
+    metadata:
+      labels:
+        app: db-test-app
+    spec:
+      containers:
+      - name: db-test-app
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install psycopg2-binary redis flask
+          python -c "
+          from flask import Flask, jsonify
+          import psycopg2
+          import redis
+          import os
+          from datetime import datetime
+          import json
+
+          app = Flask(__name__)
+
+          def get_postgres_data():
+              try:
+                  conn = psycopg2.connect(
+                      host=os.environ['POSTGRES_HOST'],
+                      port=os.environ['POSTGRES_PORT'],
+                      dbname=os.environ['POSTGRES_DB'],
+                      user=os.environ['POSTGRES_USER'],
+                      password=os.environ['POSTGRES_PASSWORD']
+                  )
+                  cur = conn.cursor()
+
+                  # Get PostgreSQL version
+                  cur.execute('SELECT version();')
+                  version = cur.fetchone()[0]
+
+                  # Get current time from database
+                  cur.execute('SELECT NOW();')
+                  db_time = cur.fetchone()[0].isoformat()
+
+                  # Get database size
+                  cur.execute('SELECT pg_size_pretty(pg_database_size(current_database()));')
+                  db_size = cur.fetchone()[0]
+
+                  # Get current user and database
+                  cur.execute('SELECT current_user, current_database();')
+                  current_user, current_db = cur.fetchone()
+
+                  # Check if PostGIS is available
+                  cur.execute(\"\"\"
+                      SELECT EXISTS(
+                          SELECT 1 FROM pg_extension WHERE extname = 'postgis'
+                      );
+                  \"\"\")
+                  postgis_available = cur.fetchone()[0]
+
+                  cur.close()
+                  conn.close()
+
+                  return {
+                      'status': 'success',
+                      'version': version,
+                      'time': db_time,
+                      'database_size': db_size,
+                      'current_user': current_user,
+                      'current_database': current_db,
+                      'postgis_available': postgis_available
+                  }
+              except Exception as e:
+                  return {
+                      'status': 'error',
+                      'error': str(e)
+                  }
+
+          def get_redis_data():
+              try:
+                  # Try multiple Redis connection methods for ACL authentication
+                  redis_host = os.environ['REDIS_HOST']
+                  redis_port = int(os.environ['REDIS_PORT'])
+                  redis_user = os.environ.get('REDIS_USER')
+                  redis_password = os.environ['REDIS_PASSWORD']
+
+                  # Method 1: Try ACL authentication with username/password
+                  if redis_user:
+                      try:
+                          r = redis.Redis(
+                              host=redis_host,
+                              port=redis_port,
+                              username=redis_user,
+                              password=redis_password,
+                              decode_responses=True
+                          )
+                          # Test the connection
+                          r.ping()
+                      except redis.AuthenticationError:
+                          # Method 2: Try connecting and then authenticating
+                          r = redis.Redis(
+                              host=redis_host,
+                              port=redis_port,
+                              decode_responses=True
+                          )
+                          # Authenticate using ACL format: AUTH username password
+                          r.execute_command('AUTH', redis_user, redis_password)
+                      except Exception:
+                          # Method 3: Fall back to legacy auth if ACL fails
+                          r = redis.Redis(
+                              host=redis_host,
+                              port=redis_port,
+                              password=redis_password,
+                              decode_responses=True
+                          )
+                  else:
+                      r = redis.Redis(
+                          host=redis_host,
+                          port=redis_port,
+                          password=redis_password,
+                          decode_responses=True
+                      )
+
+                  # Set a test key
+                  test_key = 'db_test:' + datetime.now().strftime(\"%Y%m%d_%H%M%S\")
+                  r.set(test_key, datetime.now().isoformat(), ex=3600)  # Expire in 1 hour
+
+                  # Get Redis info
+                  info = r.info()
+
+                  # Get the test key back
+                  test_value = r.get(test_key)
+
+                  # Get current user (if ACL is used)
+                  try:
+                      client_info = r.client_info()
+                      username = client_info.get('user', 'default')
+                  except:
+                      username = 'unknown'
+
+                  return {
+                      'status': 'success',
+                      'version': info.get('redis_version'),
+                      'memory_used': info.get('used_memory_human'),
+                      'connected_clients': info.get('connected_clients'),
+                      'current_user': username,
+                      'test_key': test_key,
+                      'test_value': test_value
+                  }
+              except Exception as e:
+                  return {
+                      'status': 'error',
+                      'error': str(e)
+                  }
+
+          @app.route('/')
+          def index():
+              postgres_result = get_postgres_data()
+              redis_result = get_redis_data()
+
+              # Prepare the data for HTML generation
+              test_time = datetime.now().isoformat()
+              pg_class = 'success' if postgres_result['status'] == 'success' else 'error'
+              pg_status = postgres_result['status'].upper()
+              redis_class = 'success' if redis_result['status'] == 'success' else 'error'
+              redis_status = redis_result['status'].upper()
+
+              if postgres_result['status'] == 'success':
+                  pg_details = '''<table>
+                                  <tr><th>Version</th><td>''' + str(postgres_result.get('version', 'N/A')) + '''</td></tr>
+                                  <tr><th>Database Time</th><td>''' + str(postgres_result.get('time', 'N/A')) + '''</td></tr>
+                                  <tr><th>Database Size</th><td>''' + str(postgres_result.get('database_size', 'N/A')) + '''</td></tr>
+                                  <tr><th>Current User</th><td>''' + str(postgres_result.get('current_user', 'N/A')) + '''</td></tr>
+                                  <tr><th>Current Database</th><td>''' + str(postgres_result.get('current_database', 'N/A')) + '''</td></tr>
+                                  <tr><th>PostGIS Available</th><td>''' + str(postgres_result.get('postgis_available', 'N/A')) + '''</td></tr>
+                                  </table>'''
+              else:
+                  pg_details = '''<strong>Error:</strong> ''' + str(postgres_result['error'])
+
+              if redis_result['status'] == 'success':
+                  redis_details = '''<table>
+                                     <tr><th>Version</th><td>''' + str(redis_result.get('version', 'N/A')) + '''</td></tr>
+                                     <tr><th>Memory Used</th><td>''' + str(redis_result.get('memory_used', 'N/A')) + '''</td></tr>
+                                     <tr><th>Connected Clients</th><td>''' + str(redis_result.get('connected_clients', 'N/A')) + '''</td></tr>
+                                     <tr><th>Current User</th><td>''' + str(redis_result.get('current_user', 'N/A')) + '''</td></tr>
+                                     <tr><th>Test Key</th><td>''' + str(redis_result.get('test_key', 'N/A')) + '''</td></tr>
+                                     </table>'''
+              else:
+                  redis_details = '''<strong>Error:</strong> ''' + str(redis_result['error'])
+
+              json_output = json.dumps({'postgres': postgres_result, 'redis': redis_result}, indent=2)
+
+              html = '''
+              <html>
+              <head>
+                  <title>Database Connection Test</title>
+                  <style>
+                      body { font-family: Arial, sans-serif; margin: 40px; }
+                      .success { color: green; }
+                      .error { color: red; }
+                      .box { border: 1px solid #ccc; padding: 20px; margin: 20px 0; border-radius: 5px; }
+                      pre { background: #f5f5f5; padding: 10px; border-radius: 3px; }
+                      table { border-collapse: collapse; width: 100%; }
+                      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                      th { background-color: #f2f2f2; }
+                  </style>
+              </head>
+              <body>
+                  <h1>Database Connection Test</h1>
+                  <p><strong>Test Time:</strong> ''' + test_time + '''</p>
+
+                  <div class="box">
+                      <h2>PostgreSQL Connection</h2>
+                      <div class="''' + pg_class + '''">
+                          <strong>Status:</strong> ''' + pg_status + '''<br>
+                          ''' + pg_details + '''
+                      </div>
+                  </div>
+
+                  <div class="box">
+                      <h2>Redis Connection</h2>
+                      <div class="''' + redis_class + '''">
+                          <strong>Status:</strong> ''' + redis_status + '''<br>
+                          ''' + redis_details + '''
+                      </div>
+                  </div>
+
+                  <div class="box">
+                      <h3>Raw Results (JSON)</h3>
+                      <pre>''' + json_output + '''</pre>
+                  </div>
+              </body>
+              </html>
+              '''
+
+              return html
+
+          @app.route('/json')
+          def json_endpoint():
+              return jsonify({
+                  'postgres': get_postgres_data(),
+                  'redis': get_redis_data(),
+                  'timestamp': datetime.now().isoformat()
+              })
+
+          @app.route('/health')
+          def health():
+              postgres_result = get_postgres_data()
+              redis_result = get_redis_data()
+
+              overall_status = 'healthy' if (postgres_result['status'] == 'success' and redis_result['status'] == 'success') else 'unhealthy'
+
+              return jsonify({
+                  'status': overall_status,
+                  'postgres': postgres_result['status'],
+                  'redis': redis_result['status'],
+                  'timestamp': datetime.now().isoformat()
+              })
+
+          app.run(host='0.0.0.0', port=8080)
+          "
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: db-test-config
+        - secretRef:
+            name: db-test-secrets
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-test-service
+spec:
+  selector:
+    app: db-test-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: NodePort  # Changed to NodePort for easier remote access
+---
+# Ingress (optional - you can also just use the NodePort)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: db-test-ingress
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+  - http:  # Removed the host requirement - will work on any hostname
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: db-test-service
+            port:
+              number: 80

@@ -1,0 +1,208 @@
+---
+- name: Setup Redis
+  hosts: redis
+  become: yes
+  gather_facts: yes
+  vars_files:
+    - ../../group_vars/all/vault.yml
+    - ../../group_vars/redis.yml
+  handlers:
+    - name: restart redis
+      systemd:
+        name: redis-server
+        state: restarted
+        daemon_reload: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install dependencies for Redis repository
+      apt:
+        name:
+          - lsb-release
+          - curl
+          - gpg
+        state: present
+
+    - name: Add Redis GPG key
+      apt_key:
+        url: https://packages.redis.io/gpg
+        keyring: /usr/share/keyrings/redis-archive-keyring.gpg
+        state: present
+
+    - name: Set proper permissions on Redis keyring
+      file:
+        path: /usr/share/keyrings/redis-archive-keyring.gpg
+        mode: '0644'
+
+    - name: Add Redis repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb {{ ansible_distribution_release }} main"
+        filename: redis
+        state: present
+        update_cache: yes
+
+    - name: Check available Redis versions (for debugging)
+      shell: apt-cache policy redis-server | grep -E '^\s+[0-9]+:' | head -10
+      register: available_versions
+      changed_when: false
+      failed_when: false
+
+    - name: Display available Redis versions
+      debug:
+        msg: "Available Redis versions: {{ available_versions.stdout_lines }}"
+
+    - name: Display selected Redis version
+      debug:
+        msg: "Installing Redis version: {{ redis_version }} (package: redis-server={{ redis_package_version }})"
+
+    - name: Install specific Redis server and tools version
+      apt:
+        name:
+          - "redis-server={{ redis_package_version }}"
+          - "redis-tools={{ redis_package_version }}"
+        state: present
+        update_cache: yes
+        allow_downgrade: yes
+
+    - name: Backup original Redis configuration
+      copy:
+        src: /etc/redis/redis.conf
+        dest: /etc/redis/redis.conf.backup
+        remote_src: yes
+        backup: yes
+
+    - name: Configure Redis - bind address
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^bind '
+        line: "bind {{ redis_bind_address }}"
+        backup: yes
+      notify: restart redis
+
+    - name: Configure Redis - port
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^port '
+        line: "port {{ redis_port }}"
+      notify: restart redis
+
+    - name: Configure Redis - daemonize
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^daemonize '
+        line: "daemonize yes"
+      notify: restart redis
+
+    - name: Configure Redis - password authentication
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^# requirepass '
+        line: "requirepass {{ redis_password }}"
+      notify: restart redis
+
+    - name: Configure Redis - max memory
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^# maxmemory '
+        line: "maxmemory {{ redis_max_memory }}"
+      notify: restart redis
+
+    - name: Configure Redis - max memory policy
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^# maxmemory-policy '
+        line: "maxmemory-policy {{ redis_max_memory_policy }}"
+      notify: restart redis
+
+    - name: Configure Redis ACL file
+      template:
+        src: "{{ playbook_dir }}/../../templates/redis.acl.j2"
+        dest: /etc/redis/users.acl
+        owner: redis
+        group: redis
+        mode: '0640'
+      notify: restart redis
+
+    - name: Configure Redis to use ACL file
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^#?aclfile '
+        line: "aclfile /etc/redis/users.acl"
+        state: present
+      notify: restart redis
+
+    - name: Configure Redis - log level
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^loglevel '
+        line: "loglevel notice"
+      notify: restart redis
+
+    - name: Configure Redis - log file
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^logfile '
+        line: "logfile /var/log/redis/redis-server.log"
+      notify: restart redis
+
+    - name: Ensure Redis log directory exists
+      file:
+        path: /var/log/redis
+        state: directory
+        owner: redis
+        group: redis
+        mode: '0755'
+
+    - name: Enable and start Redis service
+      systemd:
+        name: redis-server
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for Redis to be ready
+      wait_for:
+        port: "{{ redis_port }}"
+        host: "{{ redis_bind_address }}"
+        timeout: 30
+
+    - name: Test Redis connection
+      command: redis-cli -a {{ redis_password }} ping
+      register: redis_ping
+      changed_when: false
+
+    - name: Verify Redis is working
+      debug:
+        msg: "Redis is working properly: {{ redis_ping.stdout }}"
+      when: redis_ping.stdout == "PONG"
+
+    - name: Configure firewall for Redis (if ufw is installed)
+      ufw:
+        rule: allow
+        port: "{{ redis_port }}"
+        src: "{{ item }}"
+      loop:
+        - "10.0.0.0/24"  # Local network
+      when: ansible_facts.packages.ufw is defined
+      ignore_errors: yes
+
+    - name: Display Redis service status
+      systemd:
+        name: redis-server
+      register: redis_status
+
+    - name: Show Redis service status
+      debug:
+        msg: "Redis service is {{ redis_status.status.ActiveState }}"
+
+    - name: Display Redis version
+      command: redis-server --version
+      register: redis_version
+      changed_when: false
+
+    - name: Show Redis version
+      debug:
+        msg: "{{ redis_version.stdout }}"

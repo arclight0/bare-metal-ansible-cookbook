@@ -1,0 +1,2 @@
+user default off
+user {{ redis_acl_user }} +@all -@dangerous +info ~* on >{{ redis_acl_password }}

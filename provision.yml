@@ -1,0 +1,71 @@
+---
+# Main playbook to orchestrate all setup
+- name: Ensure Proxmox access is working
+  hosts: proxmox
+  gather_facts: false
+  connection: local
+  tasks:
+    - name: Test Proxmox API connectivity
+      community.general.proxmox:
+        api_host: "{{ proxmox_api_host }}"
+        api_port: "{{ proxmox_api_port }}"
+        api_token_id: "{{ vault_proxmox_api_token_id }}"
+        api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+        validate_certs: "{{ proxmox_verify_ssl }}"
+        node: "{{ inventory_hostname_short }}"
+        state: present
+        vmid: 999999
+      register: proxmox_check
+      failed_when: false
+
+    - name: Show Proxmox connectivity status
+      debug:
+        msg: "Successfully connected to Proxmox API! Authentication working."
+      when: "'does not exist' in proxmox_check.msg or proxmox_check.changed or not proxmox_check.failed"
+
+    - name: Show authentication error details
+      debug:
+        var: proxmox_check
+      when: "proxmox_check.failed and 'authentication' in proxmox_check.msg|lower"
+
+    - name: Fail if Proxmox API is not accessible
+      fail:
+        msg: "Failed to connect to Proxmox API. Error: {{ proxmox_check.msg }}"
+      when: "proxmox_check.failed and 'authentication' in proxmox_check.msg|lower"
+
+# Include the VM creation playbook
+- import_playbook: playbooks/provision/01_create_vms.yml
+
+# Wait for VMs to become available via Tailscale
+- name: Wait for VMs to be ready
+  hosts: postgres:k3s:redis
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH (via Tailscale MagicDNS) to come up
+      wait_for:
+        host: "{{ inventory_hostname }}.{{ tailscale_domain }}"
+        port: 22
+        #delay: 30  # Extra time for Tailscale connection
+        timeout: 600
+      delegate_to: localhost
+      become: false
+
+    - name: Test Tailscale connectivity
+      ping:
+      vars:
+        # Override to use Tailscale FQDN
+        ansible_host: "{{ inventory_hostname }}.{{ tailscale_domain }}"
+      timeout: 30
+      become: false
+
+# Setup PostgreSQL
+- import_playbook: playbooks/provision/10_setup_postgres.yml
+
+# Setup pgBackRest for PostgreSQL backup
+- import_playbook: playbooks/provision/11_setup_pgbackrest.yml
+
+# Setup Redis
+- import_playbook: playbooks/provision/20_setup_redis.yml
+
+# Setup K3s cluster
+- import_playbook: playbooks/provision/30_setup_k3s.yml

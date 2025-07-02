@@ -1,0 +1,27 @@
+[global]
+repo1-type={{ pgbackrest_repo_type }}
+{% if pgbackrest_s3_enabled %}
+repo1-s3-bucket={{ pgbackrest_s3_bucket }}
+repo1-s3-region={{ pgbackrest_s3_region }}
+repo1-s3-endpoint={{ pgbackrest_s3_endpoint }}
+repo1-s3-key={{ pgbackrest_s3_key }}
+repo1-s3-key-secret={{ pgbackrest_s3_key_secret }}
+{% endif %}
+repo1-path={{ pgbackrest_repo_path }}
+repo1-retention-full={{ pgbackrest_repo_retention_full }}
+repo1-retention-diff={{ pgbackrest_repo_retention_diff }}
+
+# Performance settings
+process-max={{ pgbackrest_process_max }}
+compress-type={{ pgbackrest_compress_type }}
+compress-level={{ pgbackrest_compress_level }}
+
+# Logging
+log-level-console={{ pgbackrest_log_level_console }}
+log-level-file={{ pgbackrest_log_level_file }}
+log-path=/var/log/pgbackrest
+
+[{{ pgbackrest_stanza }}]
+pg1-path={{ postgres_data_dir }}
+pg1-port={{ postgres_port }}
+pg1-user={{ pgbackrest_user }}

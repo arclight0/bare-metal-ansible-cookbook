@@ -1,0 +1,103 @@
+---
+- name: Add NAT bridge and configure DNSMasq on Proxmox
+  hosts: proxmox
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../group_vars/all/vault.yml
+  vars:
+    bridge_name: "vmbr1"
+    bridge_ip4: "10.0.0.1/24"
+    dhcp_range_ipv4: "10.0.0.100,10.0.0.199"
+    dhcp_lease_time: "12h"
+    dns_servers: "8.8.8.8,1.1.1.1" # Google and Cloudflare
+    nat_network: "10.0.0.0/24"
+    external_interface: "vmbr0"
+
+  tasks:
+    - name: Check if vmbr1 bridge configuration already exists
+      ansible.builtin.raw: grep -q "auto {{ bridge_name }}" /etc/network/interfaces
+      delegate_to: "{{ inventory_hostname }}"
+      register: bridge_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Add NAT bridge configuration to /etc/network/interfaces
+      ansible.builtin.raw: |
+        cat >> /etc/network/interfaces << 'EOF'
+
+        auto {{ bridge_name }}
+        iface {{ bridge_name }} inet static
+            address {{ bridge_ip4 }}
+            bridge-ports none
+            bridge-stp off
+            bridge-fd 0
+            post-up echo 1 > /proc/sys/net/ipv4/ip_forward
+            post-up iptables -t nat -A POSTROUTING -s {{ nat_network }} -o {{ external_interface }} -j MASQUERADE
+            post-down iptables -t nat -D POSTROUTING -s {{ nat_network }} -o {{ external_interface }} -j MASQUERADE
+        EOF
+      delegate_to: "{{ inventory_hostname }}"
+      when: bridge_exists.rc != 0
+
+    - name: Reload network interfaces
+      ansible.builtin.raw: ifreload -a
+      delegate_to: "{{ inventory_hostname }}"
+      when: bridge_exists.rc != 0
+
+    - name: Install DNSMasq
+      ansible.builtin.apt:
+        name: dnsmasq
+        state: present
+        update_cache: true
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Check if DNSMasq bridge config already exists
+      ansible.builtin.raw: test -f /etc/dnsmasq.d/vmbr1.conf
+      delegate_to: "{{ inventory_hostname }}"
+      register: dnsmasq_bridge_config_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Create dnsmasq.d directory if it doesn't exist
+      ansible.builtin.raw: mkdir -p /etc/dnsmasq.d
+      delegate_to: "{{ inventory_hostname }}"
+      when: dnsmasq_bridge_config_exists.rc != 0
+
+    - name: Configure DNSMasq for NAT bridge
+      ansible.builtin.template:
+        src: ../../templates/vmbr1.conf.j2
+        dest: /etc/dnsmasq.d/vmbr1.conf
+        owner: root
+        group: root
+        mode: '0644'
+      delegate_to: "{{ inventory_hostname }}"
+      when: dnsmasq_bridge_config_exists.rc != 0
+
+    - name: Restart DNSMasq service
+      ansible.builtin.raw: systemctl restart dnsmasq
+      delegate_to: "{{ inventory_hostname }}"
+      when: dnsmasq_bridge_config_exists.rc != 0
+
+    - name: Enable DNSMasq service
+      ansible.builtin.raw: systemctl enable dnsmasq
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Verify bridge is up and configured
+      ansible.builtin.raw: ip addr show {{ bridge_name }}
+      delegate_to: "{{ inventory_hostname }}"
+      register: bridge_status
+      changed_when: false
+
+    - name: Display bridge status
+      debug:
+        msg: "{{ bridge_status.stdout_lines }}"
+
+    - name: Verify DNSMasq is running
+      ansible.builtin.raw: systemctl is-active dnsmasq
+      delegate_to: "{{ inventory_hostname }}"
+      register: dnsmasq_status
+      changed_when: false
+
+    - name: Display DNSMasq status
+      debug:
+        msg: "DNSMasq is {{ dnsmasq_status.stdout.strip() }}"

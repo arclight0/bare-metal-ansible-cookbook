@@ -1,0 +1,23 @@
+---
+# Proxmox credentials - replace with actual values
+vault_proxmox_api_user:
+#vault_proxmox_api_password:
+vault_proxmox_api_token_id:
+vault_proxmox_api_token_secret:
+
+# SSH keys for VM access
+vault_ssh_public_key:
+
+# Tailscale
+vault_tailscale_auth_key:
+tailscale_domain:
+
+# Postgres VM
+vault_postgres_password:
+# Postgres pgBackup
+vault_pgbackrest_s3_bucket:
+vault_pgbackrest_s3_key:
+vault_pgbackrest_s3_key_secret:
+
+# Redis
+vault_redis_acl_password:

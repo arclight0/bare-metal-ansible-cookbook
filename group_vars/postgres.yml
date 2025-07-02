@@ -1,0 +1,51 @@
+---
+postgres_port: 5432
+postgres_version: 17
+postgres_data_dir: /var/lib/postgresql/{{ postgres_version }}/main
+postgres_config_dir: /etc/postgresql/{{ postgres_version }}/main
+postgres_listen_addresses: '*'
+postgres_max_connections: 100
+postgres_shared_buffers: 12GB
+postgres_effective_cache_size: 36GB
+postgres_maintenance_work_mem: 2GB
+postgres_work_mem: 61082kB
+postgres_wal_buffers: 16MB
+postgres_checkpoint_completion_target: "0.9"
+postgres_default_statistics_target: 100
+
+# pgBackRest Configuration
+pgbackrest_enabled: true
+pgbackrest_user: postgres
+pgbackrest_group: postgres
+
+# pgBackRest S3 Configuration
+pgbackrest_s3_enabled: true
+pgbackrest_s3_bucket: "{{ vault_pgbackrest_s3_bucket }}"
+pgbackrest_s3_region: "{{ vault_pgbackrest_s3_region | default('us-east-1') }}"
+pgbackrest_s3_endpoint: "{{ vault_pgbackrest_s3_endpoint | default('s3.amazonaws.com') }}"
+pgbackrest_s3_key: "{{ vault_pgbackrest_s3_key }}"
+pgbackrest_s3_key_secret: "{{ vault_pgbackrest_s3_key_secret }}"
+
+# pgBackRest Repository and Backup Configuration
+pgbackrest_stanza: "main"
+pgbackrest_repo_type: "s3"
+pgbackrest_repo_path: "/postgres-backups"
+pgbackrest_repo_retention_full: 4  # Keep 4 full backups (1 month)
+pgbackrest_repo_retention_diff: 4  # Keep 4 differential backups
+pgbackrest_log_level_console: info
+pgbackrest_log_level_file: detail
+
+# PostgreSQL Archive Configuration for pgBackRest
+postgres_archive_mode: "on"
+postgres_archive_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-push %p"
+postgres_max_wal_senders: 3
+postgres_wal_level: replica
+
+# Backup Schedules (will be configured in cron)
+pgbackrest_full_backup_schedule: "0 2 * * 0"  # Weekly full backup on Sunday at 2 AM
+pgbackrest_incremental_backup_schedule: "0 3 * * 1-6"  # Daily incremental backups Mon-Sat at 3 AM
+
+# pgBackRest Performance Settings
+pgbackrest_process_max: 4
+pgbackrest_compress_type: lz4
+pgbackrest_compress_level: 1

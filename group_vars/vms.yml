@@ -1,0 +1,67 @@
+---
+proxmox_node:
+# Ubuntu 24.04 LTS cloud image (download this to your Proxmox host first)
+cloud_image: "/var/lib/vz/images/noble-server-cloudimg-amd64.img"
+vm_defaults:
+  cores: 2
+  memory: 2048
+  disk_size: "20G"  # Cloud images need more space than 10G
+  storage: "local-zfs"
+  net_bridge: "vmbr1"
+  # VM template defaults
+  cpu: "host"
+  scsihw: "virtio-scsi-pci"
+  ostype: "l26"  # Linux 2.6+ kernel
+vms:
+  - name: postgres-01
+    id: 100
+    group: "postgres"
+    ip: "10.0.0.100"
+    cidr: "10.0.0.100/24"
+    gateway: "10.0.0.1"
+    cores: 6
+    memory: 49152 # 48GB
+    disk_size: "512G"
+    # Optional per-VM cloud-init settings:
+    ciuser: "ubuntu"
+    # cipassword: "postgres-password"
+
+  - name: redis-01
+    id: 101
+    group: "redis"
+    ip: "10.0.0.110"
+    cidr: "10.0.0.110/24"
+    gateway: "10.0.0.1"
+    cores: 2
+    memory: 4096 # 4GB
+    disk_size: "40G"
+
+  - name: k3s-master-01
+    id: 150
+    group: "k3s_master"
+    ip: "10.0.0.150"
+    cidr: "10.0.0.150/24"
+    gateway: "10.0.0.1"
+    cores: 2
+    memory: 4096 # 4GB
+    disk_size: "40G"
+
+  - name: k3s-worker-01
+    id: 151
+    group: "k3s_worker"
+    ip: "10.0.0.151"
+    cidr: "10.0.0.151/24"
+    gateway: "10.0.0.1"
+    cores: 6
+    memory: 16384 # 16GB
+    disk_size: "100G"
+
+  - name: k3s-worker-02
+    id: 152
+    group: "k3s_worker"
+    ip: "10.0.0.152"
+    cidr: "10.0.0.152/24"
+    gateway: "10.0.0.1"
+    cores: 6
+    memory: 16384 # 16GB
+    disk_size: "100G"

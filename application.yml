@@ -1,0 +1,94 @@
+- name: Set up application Postgres database
+  hosts: postgres
+  become: true
+  vars:
+    postgres_databases:
+      - name: myproject_db
+        owner: appuser
+        extensions:
+          - postgis
+          - h3
+    postgres_users:
+      - name: appuser
+        password: "{{ vault_postgres_password }}"
+        privs: ALL
+        role_attr_flags: CREATEDB,LOGIN
+
+  tasks:
+    - name: Wait for PostgreSQL to be ready
+      wait_for:
+        port: "{{ postgres_port }}"
+        host: localhost
+        timeout: 60
+
+    - name: Verify PostgreSQL is responding
+      shell: pg_isready -h localhost -p {{ postgres_port }}
+      register: pg_ready
+      retries: 5
+      delay: 10
+      until: pg_ready.rc == 0
+      changed_when: false
+
+    - name: Create PostgreSQL users
+      postgresql_user:
+        name: "{{ item.name }}"
+        password: "{{ item.password }}"
+        role_attr_flags: "{{ item.role_attr_flags | default(omit) }}"
+        state: present
+      loop: "{{ postgres_users }}"
+      become: true
+      become_user: postgres
+
+    - name: Create PostgreSQL databases
+      postgresql_db:
+        name: "{{ item.name }}"
+        owner: "{{ item.owner }}"
+        encoding: UTF-8
+        lc_collate: en_US.UTF-8
+        lc_ctype: en_US.UTF-8
+        template: template0
+        state: present
+      loop: "{{ postgres_databases }}"
+      become: true
+      become_user: postgres
+
+    - name: Grant privileges on databases
+      postgresql_privs:
+        db: "{{ item.0.name }}"
+        role: "{{ item.1.name }}"
+        privs: "{{ item.1.privs }}"
+        type: database
+        state: present
+      loop: "{{ postgres_databases|product(postgres_users)|list }}"
+      become: true
+      become_user: postgres
+
+    - name: Create PostgreSQL extensions
+      postgresql_ext:
+        name: "{{ item.1 }}"
+        db: "{{ item.0.name }}"
+        state: present
+      loop: "{{ postgres_databases | subelements('extensions') }}"
+      become: true
+      become_user: postgres
+
+- name: Generate K3s database test manifest
+  hosts: localhost
+  become: false
+  gather_facts: false
+  vars_files:
+    - group_vars/all/vault.yml
+    - group_vars/redis.yml
+    - group_vars/postgres.yml
+  tasks:
+    - name: Ensure examples directory exists
+      file:
+        path: examples
+        state: directory
+        mode: '0755'
+
+    - name: Generate database test application manifest
+      template:
+        src: templates/db-test-app.yaml.j2
+        dest: examples/db-test-app.yaml
+        mode: '0644'

@@ -1,0 +1,12 @@
+---
+# User-friendly version - just specify the Redis version (e.g., "7.2.*", "7.4.3", "8.0.*")
+redis_version: "{{ vault_redis_version | default('7.2.*') }}"
+# Internal variable - constructs the full package version with epoch
+redis_package_version: "6:{{ redis_version }}"
+redis_password: "{{ vault_redis_password | default('redis-strong-password-123') }}"
+redis_bind_address: "0.0.0.0"
+redis_port: 6379
+redis_max_memory: "2gb"
+redis_max_memory_policy: "allkeys-lru"
+redis_acl_user: "{{ vault_redis_acl_user | default('appuser') }}"
+redis_acl_password: "{{ vault_redis_acl_password | default('redis-acl-password-123') }}"

@@ -1,0 +1,83 @@
+---
+- name: Install and Configure PostgreSQL
+  hosts: postgres
+  become: true
+  vars_files:
+    - ../../group_vars/all/vault.yml
+    - ../../group_vars/postgres.yml
+  tasks:
+    - name: Install required packages for adding apt repository
+      apt:
+        name:
+          - wget
+          - ca-certificates
+          - gnupg
+        state: present
+        update_cache: yes
+
+    - name: Add PostgreSQL official APT signing key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+
+    - name: Add PostgreSQL official APT repository
+      apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main"
+        state: present
+        filename: pgdg
+
+    - name: Install PostgreSQL and dependencies
+      apt:
+        name:
+          - python3-psycopg2
+          - libpq-dev
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib-{{ postgres_version }}
+          - postgresql-{{ postgres_version }}-h3
+          - postgresql-{{ postgres_version }}-postgis-3
+          - postgresql-{{ postgres_version }}-postgis-3-scripts
+          - postgresql-client-{{ postgres_version }}
+          - postgresql-common
+          - postgresql-client-common
+        state: present
+        update_cache: yes
+
+    - name: Ensure PostgreSQL service is started and enabled
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Configure PostgreSQL - postgresql.conf
+      lineinfile:
+        path: "{{ postgres_config_dir }}/postgresql.conf"
+        regexp: "^#?{{ item.option }}"
+        line: "{{ item.option }} = {{ item.value }}"
+        state: present
+      loop:
+        - { option: 'listen_addresses', value: "'{{ postgres_listen_addresses }}'" }
+        - { option: 'port', value: '{{ postgres_port }}' }
+        - { option: 'max_connections', value: '{{ postgres_max_connections }}' }
+        - { option: 'shared_buffers', value: '{{ postgres_shared_buffers }}' }
+        - { option: 'effective_cache_size', value: '{{ postgres_effective_cache_size }}' }
+        - { option: 'maintenance_work_mem', value: '{{ postgres_maintenance_work_mem }}' }
+        - { option: 'work_mem', value: '{{ postgres_work_mem }}' }
+        - { option: 'wal_buffers', value: '{{ postgres_wal_buffers }}' }
+        - { option: 'checkpoint_completion_target', value: '{{ postgres_checkpoint_completion_target }}' }
+        - { option: 'default_statistics_target', value: '{{ postgres_default_statistics_target }}' }
+      notify: restart postgresql
+
+    - name: Configure PostgreSQL - pg_hba.conf
+      template:
+        src: "{{ playbook_dir }}/../../templates/pg_hba.conf.j2"
+        dest: "{{ postgres_config_dir }}/pg_hba.conf"
+        owner: postgres
+        group: postgres
+        mode: '0640'
+      notify: restart postgresql
+
+  handlers:
+    - name: restart postgresql
+      service:
+        name: postgresql
+        state: restarted

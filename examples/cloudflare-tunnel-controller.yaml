@@ -1,0 +1,120 @@
+# Cloudflare Tunnel Controller for Multiple Applications
+# This setup allows you to manage multiple Cloudflare tunnels from a single deployment
+
+# Namespace for all tunnel-related resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflare-tunnels
+---
+# ConfigMap for tunnel configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tunnel-configs
+  namespace: cloudflare-tunnels
+data:
+  # Main tunnel configuration - supports multiple ingress rules
+  tunnel-config.yaml: |
+    tunnel: TUNNEL_ID_PLACEHOLDER
+    credentials-file: /etc/cloudflared/credentials.json
+
+    ingress:
+      # Route for db-test-app
+      - hostname: db-test.yourdomain.com
+        service: http://db-test-service.default.svc.cluster.local:80
+
+      # Route for future apps - add more as needed
+      # - hostname: app2.yourdomain.com
+      #   service: http://app2-service.default.svc.cluster.local:80
+
+      # Catch-all rule (required)
+      - service: http_status:404
+---
+# Secret to store tunnel credentials
+# You'll need to create this secret with your actual tunnel credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tunnel-credentials
+  namespace: cloudflare-tunnels
+type: Opaque
+data:
+  # This will be populated when you create your tunnel
+  # credentials.json: <base64-encoded-credentials>
+---
+# Deployment for cloudflared
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflare-tunnels
+  labels:
+    app: cloudflared
+spec:
+  replicas: 2  # For high availability
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      containers:
+      - name: cloudflared
+        image: cloudflare/cloudflared:latest
+        args:
+        - tunnel
+        - --config
+        - /etc/cloudflared/config/tunnel-config.yaml
+        - run
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cloudflared/config
+          readOnly: true
+        - name: credentials
+          mountPath: /etc/cloudflared
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: config
+        configMap:
+          name: tunnel-configs
+      - name: credentials
+        secret:
+          secretName: tunnel-credentials
+---
+# Service for cloudflared (for monitoring)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflared-service
+  namespace: cloudflare-tunnels
+spec:
+  selector:
+    app: cloudflared
+  ports:
+  - name: metrics
+    port: 2000
+    targetPort: 2000
+---
+# ServiceMonitor for Prometheus (optional)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cloudflared-metrics
+  namespace: cloudflare-tunnels
+spec:
+  selector:
+    matchLabels:
+      app: cloudflared
+  endpoints:
+  - port: metrics
+    path: /metrics

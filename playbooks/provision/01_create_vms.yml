@@ -1,0 +1,236 @@
+---
+- name: Create VMs on Proxmox
+  hosts: proxmox
+  gather_facts: false
+  connection: local  # Run locally, use API instead of SSH
+  become: false  # Disable sudo - not needed for API calls
+  vars_files:
+    - ../../group_vars/all/vault.yml
+    - ../../group_vars/vms.yml
+  tasks:
+    - name: Debug all variables
+      debug:
+        msg:
+          - "vault_ssh_public_key defined: {{ vault_ssh_public_key is defined }}"
+          - "vault_ssh_public_key value: {{ vault_ssh_public_key | default('UNDEFINED') }}"
+          - "vault_proxmox_api_token_id: {{ vault_proxmox_api_token_id | default('UNDEFINED') }}"
+          - "All vars: {{ vars.keys() | list }}"
+
+    - name: Debug Proxmox API variables
+      debug:
+        msg:
+          - "vault_proxmox_api_user: {{ vault_proxmox_api_user }}"
+          - "vault_proxmox_api_token_id: {{ vault_proxmox_api_token_id }}"
+          - "vault_proxmox_api_token_secret: {{ vault_proxmox_api_token_secret | default('UNDEFINED') }}"
+          - "proxmox_api_user: {{ proxmox_api_user | default('UNDEFINED') }}"
+          - "proxmox_api_token_id: {{ proxmox_api_token_id | default('UNDEFINED') }}"
+
+    - name: Create VMs (without disk)
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_host: "{{ proxmox_api_host }}"
+        api_port: "{{ proxmox_api_port }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+        validate_certs: "{{ proxmox_verify_ssl }}"
+        node: "{{ proxmox_node }}"
+        vmid: "{{ item.id }}"
+        name: "{{ item.name }}"
+        cores: "{{ item.cores | default(vm_defaults.cores) }}"
+        memory: "{{ item.memory | default(vm_defaults.memory) }}"
+        cpu: "{{ vm_defaults.cpu }}"
+        scsihw: "{{ vm_defaults.scsihw }}"
+        ostype: "{{ vm_defaults.ostype }}"
+        # Don't add scsi disk here
+        ide:
+          ide2: '{{ item.storage | default(vm_defaults.storage) }}:cloudinit'
+        net:
+          net0: 'virtio,bridge={{ vm_defaults.net_bridge }}'
+        ipconfig:
+          ipconfig0: 'ip={{ item.cidr }},gw={{ item.gateway }}'
+        # Cloud-init configuration
+        ciuser: "{{ item.ciuser | default('ubuntu') }}"
+        cipassword: "{{ item.cipassword | default(omit) }}"
+        sshkeys: "{{ vault_ssh_public_key }}"
+        boot: "order=scsi0"
+        onboot: yes
+        agent: "enabled=1"
+        state: present
+        timeout: 300
+      loop: "{{ vms }}"
+      register: vm_results
+
+    - name: Check if snippets directory exists
+      ansible.builtin.raw: test -d /var/lib/vz/snippets
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      register: snippets_dir_check
+      failed_when: false
+      changed_when: false
+
+    - name: Ensure snippets directory exists on Proxmox host
+      ansible.builtin.raw: mkdir -p /var/lib/vz/snippets
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      when: snippets_dir_check.rc != 0
+
+    - name: Create VM-specific cloud-init user-data files
+      ansible.builtin.raw: |
+        cat > /var/lib/vz/snippets/user-data-{{ item.id }}.yaml << 'EOF'
+        #cloud-config
+        hostname: {{ item.name }}
+        users:
+          - name: {{ item.ciuser | default('ubuntu') }}
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+            ssh_authorized_keys:
+              - {{ vault_ssh_public_key }}
+        {% if item.cipassword is defined %}
+        chpasswd:
+          list: |
+            {{ item.ciuser | default('ubuntu') }}:{{ item.cipassword }}
+          expire: False
+        {% endif %}
+        packages:
+          - qemu-guest-agent
+          - curl
+          - acl
+        {% if item.packages is defined %}
+        {% for package in item.packages %}
+          - {{ package }}
+        {% endfor %}
+        {% endif %}
+        write_files:
+          - path: /etc/hostname
+            permissions: '0644'
+            content: |
+              {{ item.name }}
+          - path: /etc/systemd/logind.conf.d/10-remove-ipc.conf
+            permissions: '0644'
+            content: |
+              [Login]
+              RemoveIPC=no
+          - path: /tmp/install-tailscale.sh
+            permissions: '0755'
+            content: |
+              #!/bin/bash
+              curl -fsSL https://tailscale.com/install.sh | sh
+              # Wait for tailscaled to be ready (up to 30 seconds)
+              for i in {1..30}; do
+                if systemctl is-active --quiet tailscaled; then
+                  echo "tailscaled is running"
+                  break
+                fi
+                echo "Waiting for tailscaled to start... ($i/30)"
+                sleep 1
+              done
+              # Double-check tailscale daemon is responsive
+              for i in {1..10}; do
+                if tailscale status >/dev/null 2>&1; then
+                  echo "tailscaled is responsive"
+                  break
+                fi
+                echo "Waiting for tailscale daemon to be responsive... ($i/10)"
+                sleep 1
+              done
+              tailscale up --authkey={{ vault_tailscale_auth_key | default('REPLACE_WITH_YOUR_AUTH_KEY') }} --hostname={{ item.name }}{% if item.tailscale_exit_node | default(false) %} --exit-node{% endif %}{% if item.tailscale_advertise_routes is defined %} --advertise-routes={{ item.tailscale_advertise_routes }}{% endif %}
+
+        # the above blank newline is load-bearing - do not delete!
+        runcmd:
+          - systemctl start qemu-guest-agent
+          - systemctl enable qemu-guest-agent
+          # Install and configure Tailscale
+          - /tmp/install-tailscale.sh
+          - systemctl enable tailscaled
+        power_state:
+          mode: reboot
+          timeout: 30
+        EOF
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+
+    - name: Check VM cloud-init configuration
+      ansible.builtin.raw: |
+        qm config {{ item.id }} | grep -q "cicustom.*user-data-{{ item.id }}.yaml"
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+      register: vm_cicustom_check
+      failed_when: false
+      changed_when: false
+
+    - name: Configure VMs to use VM-specific cloud-init user-data files
+      ansible.builtin.raw: >
+        qm set {{ item.item.id }} --cicustom "user=local:snippets/user-data-{{ item.item.id }}.yaml"
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vm_cicustom_check.results }}"
+      when: item.rc != 0
+
+    - name: Check if VM disk already exists
+      ansible.builtin.raw: >
+        qm config {{ item.id }} | grep -q "scsi0:"
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+      loop_control:
+        index_var: vm_index
+      register: disk_check_results
+      failed_when: false
+      changed_when: false
+
+    - name: Import cloud image disk using qm importdisk via SSH
+      ansible.builtin.raw: >
+        qm importdisk {{ item.id }}
+        {{ cloud_image }}
+        {{ item.storage | default(vm_defaults.storage) }}
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+      loop_control:
+        index_var: vm_index
+      register: disk_import_results
+      when: disk_check_results.results[vm_index].rc != 0
+
+    - name: Attach imported disk to VM
+      ansible.builtin.raw: >
+        qm set {{ item.id }}
+        --scsi0 {{ item.storage | default(vm_defaults.storage) }}:vm-{{ item.id }}-disk-0
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+      loop_control:
+        index_var: vm_index
+      when: disk_check_results.results[vm_index].rc != 0
+
+    - name: Resize disk to specified size
+      ansible.builtin.raw: >
+        qm resize {{ item.id }} scsi0 {{ item.disk_size | default(vm_defaults.disk_size) }}
+      delegate_to: "{{ inventory_hostname }}"
+      connection: ssh
+      loop: "{{ vms }}"
+      loop_control:
+        index_var: vm_index
+      when: disk_check_results.results[vm_index].rc != 0
+
+    - name: Start VMs
+      community.general.proxmox_kvm:
+        api_user: "root@pam"
+        api_host: "{{ proxmox_api_host }}"
+        api_port: "{{ proxmox_api_port }}"
+        api_token_id: "ansible"
+        api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+        validate_certs: "{{ proxmox_verify_ssl }}"
+        vmid: "{{ item.id }}"
+        state: started
+      loop: "{{ vms }}"
+
+    - name: Update inventory with new VMs
+      add_host:
+        name: "{{ item.item.name }}"
+        groups: "{{ item.item.group }}"
+        ansible_host: "{{ item.item.name }}.{{ tailscale_domain }}"
+        ansible_user: "{{ item.item.ciuser | default('ubuntu') }}"  # Use custom user or default to ubuntu
+      loop: "{{ vm_results.results }}"
+      #when: item.changed

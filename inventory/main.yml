@@ -1,0 +1,48 @@
+---
+all:
+  children:
+    proxmox:
+      hosts:
+        proxmox-01:
+          ansible_host:
+          proxmox_api_host:
+          proxmox_api_port: 8006
+          proxmox_api_user: "{{ vault_proxmox_api_user }}"
+          #proxmox_api_password: "{{ vault_proxmox_api_password }}"
+          proxmox_api_token_id: "{{ vault_proxmox_api_token_id | default(omit) }}"
+          proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret | default(omit) }}"
+          proxmox_verify_ssl: true
+
+    postgres:
+      hosts:
+        postgres-01:
+          ansible_host:
+          ansible_user: ubuntu
+          local_ip: 10.0.0.100
+
+    redis:
+      hosts:
+        redis-01:
+          ansible_host:
+          ansible_user: ubuntu
+          local_ip: 10.0.0.110
+
+    # Future VM groups - will be populated as VMs are created
+    k3s:
+      children:
+        k3s_master:
+          hosts:
+            k3s-master-01:
+              ansible_host:
+              ansible_user: ubuntu
+              local_ip: 10.0.0.150
+        k3s_worker:
+          hosts:
+            k3s-worker-01:
+              ansible_host:
+              ansible_user: ubuntu
+              local_ip: 10.0.0.151
+            k3s-worker-02:
+              ansible_host:
+              ansible_user: ubuntu
+              local_ip: 10.0.0.152
