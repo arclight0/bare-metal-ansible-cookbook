@@ -33,7 +33,7 @@ Additional scripts automate the deployment of:
    ```
    openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c32 > ~/.ansible_vault_pass
    chmod 600 ~/.ansible_vault_pass
-   ansible-vault encrypt group_vars/all/vault.yml --vault-password-file ~/.ansible_vault_pass
+   ansible-vault encrypt group_vars/all/vault.yml --vault-password-file ~/.ansible_vault_pass --encrypt-vault-id default
    ```
 
 4. After encrypting, secrets can be edited with this command:

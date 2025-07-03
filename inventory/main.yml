@@ -12,6 +12,7 @@ all:
           proxmox_api_token_id: "{{ vault_proxmox_api_token_id | default(omit) }}"
           proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret | default(omit) }}"
           proxmox_verify_ssl: true
+          ansible_user: root
 
     postgres:
       hosts:
