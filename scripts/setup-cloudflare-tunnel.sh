@@ -150,8 +150,7 @@ kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f 
 # Create secret with credentials
 kubectl create secret generic tunnel-credentials \
     --namespace=$NAMESPACE \
-    --from-file=credentials.json=$CREDENTIALS_FILE \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --from-file=credentials.json=$CREDENTIALS_FILE
 
 # Update the tunnel configuration
 echo ""
@@ -186,8 +185,8 @@ data:
         service: http://db-test-service.default.svc.cluster.local:80
 
       # Route for future apps - add more as needed
-      # - hostname: app2.$DOMAIN
-      #   service: http://app2-service.default.svc.cluster.local:80
+      # - hostname: hello-world-app.$DOMAIN
+      #   service: http://hello-world-service.default.svc.cluster.local:80
 
       # Catch-all rule (required)
       - service: http_status:404

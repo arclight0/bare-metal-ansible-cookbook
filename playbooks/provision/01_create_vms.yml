@@ -60,6 +60,15 @@
       loop: "{{ vms }}"
       register: vm_results
 
+    - name: Update inventory with new VMs
+      add_host:
+        name: "{{ item.item.name }}"
+        groups: "{{ item.item.group }}"
+        ansible_host: "{{ item.item.name }}.{{ tailscale_domain }}"
+        ansible_user: "{{ item.item.ciuser | default('ubuntu') }}"  # Use custom user or default to ubuntu
+      loop: "{{ vm_results.results }}"
+      #when: item.changed
+
     - name: Check if snippets directory exists
       ansible.builtin.raw: test -d /var/lib/vz/snippets
       delegate_to: "{{ inventory_hostname }}"

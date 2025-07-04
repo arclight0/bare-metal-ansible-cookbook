@@ -13,6 +13,7 @@
     dns_servers: "8.8.8.8,1.1.1.1" # Google and Cloudflare
     nat_network: "10.0.0.0/24"
     external_interface: "vmbr0"
+    ansible_python_interpreter: "/usr/bin/python3"
 
   tasks:
     - name: Check if vmbr1 bridge configuration already exists

@@ -33,6 +33,9 @@
         msg: "Failed to connect to Proxmox API. Error: {{ proxmox_check.msg }}"
       when: "proxmox_check.failed and 'authentication' in proxmox_check.msg|lower"
 
+# Add the NAT bridge to Proxmox
+- import_playbook: playbooks/provision/00_add_nat_bridge.yml
+
 # Include the VM creation playbook
 - import_playbook: playbooks/provision/01_create_vms.yml
 
